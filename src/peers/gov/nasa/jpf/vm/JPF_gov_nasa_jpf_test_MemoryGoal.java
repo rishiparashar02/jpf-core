@@ -24,89 +24,85 @@ import gov.nasa.jpf.jvm.bytecode.JVMReturnInstruction;
 import gov.nasa.jpf.vm.ElementInfo;
 import gov.nasa.jpf.vm.Instruction;
 import gov.nasa.jpf.vm.VM;
-import gov.nasa.jpf.vm.MJIEnv;
 import gov.nasa.jpf.vm.MethodInfo;
 import gov.nasa.jpf.vm.NativePeer;
 
 /**
- * native peer for MemoryGoal tests
+ * Native peer for MemoryGoal tests, measuring memory allocation and deallocation during method execution.
  */
 public class JPF_gov_nasa_jpf_test_MemoryGoal extends NativePeer {
 
-  Listener listener;
-  
-  // <2do> that's too simple, because we should only measure what is
-  // allocated from the invoked method, not the MethodTester. Needs a listener
-  
+  private Listener listener;
+
+  // Listener to track memory allocation and deallocation
   static class Listener extends ListenerAdapter {
-    
-    MethodInfo mi;
-    boolean active;
-    
-    long nAllocBytes;
-    long nFreeBytes;
-    long nAlloc;
-    long nFree;
-    
-    Listener (MethodInfo mi){
-      this.mi = mi;
-    }
-    
-    @Override
-    public void objectCreated (VM vm, ThreadInfo ti, ElementInfo ei){
-      if (active){        
-        nAlloc++;
-        nAllocBytes += ei.getHeapSize(); // just an approximation
-      }
-    }
-    
-    @Override
-    public void objectReleased (VM vm, ThreadInfo ti, ElementInfo ei){
-      if (active){
-        nFree++;
-        nFreeBytes += ei.getHeapSize(); // just an approximation
-      }      
+
+    private final MethodInfo methodInfo;
+    private boolean active = false;
+
+    private long allocatedBytes = 0;
+    private long freedBytes = 0;
+    private long allocationCount = 0;
+    private long deallocationCount = 0;
+
+    Listener(MethodInfo methodInfo) {
+      this.methodInfo = methodInfo;
     }
 
     @Override
-    public void instructionExecuted (VM vm, ThreadInfo ti, Instruction nextInsn, Instruction executedInsn){
+    public void objectCreated(VM vm, ThreadInfo threadInfo, ElementInfo elementInfo) {
+      if (active) {
+        allocationCount++;
+        allocatedBytes += elementInfo.getHeapSize(); // Approximation of heap size
+      }
+    }
+
+    @Override
+    public void objectReleased(VM vm, ThreadInfo threadInfo, ElementInfo elementInfo) {
+      if (active) {
+        deallocationCount++;
+        freedBytes += elementInfo.getHeapSize(); // Approximation of heap size
+      }
+    }
+
+    @Override
+    public void instructionExecuted(VM vm, ThreadInfo threadInfo, Instruction nextInstruction, Instruction executedInstruction) {
       if (!active) {
-        if (executedInsn.getMethodInfo() == mi){
+        if (executedInstruction.getMethodInfo() == methodInfo) {
           active = true;
         }
       } else {
-        if ((executedInsn instanceof JVMReturnInstruction) && (executedInsn.getMethodInfo() == mi)){
+        if (executedInstruction instanceof JVMReturnInstruction && executedInstruction.getMethodInfo() == methodInfo) {
           active = false;
         }
       }
     }
-    
-    long totalAllocBytes() {
-      return nAllocBytes - nFreeBytes;
+
+    // Calculates the total memory allocated minus the freed memory
+    long getNetAllocatedBytes() {
+      return allocatedBytes - freedBytes;
     }
   }
-  
+
   @MJI
-  public boolean preCheck__Lgov_nasa_jpf_test_TestContext_2Ljava_lang_reflect_Method_2__Z
-                      (MJIEnv env, int objRef, int testContextRef, int methodRef){
-    MethodInfo mi = JPF_java_lang_reflect_Method.getMethodInfo(env, methodRef);
-    
-    listener = new Listener(mi);
+  public boolean preCheck(MJIEnv env, int objRef, int testContextRef, int methodRef) {
+    MethodInfo methodInfo = JPF_java_lang_reflect_Method.getMethodInfo(env, methodRef);
+
+    listener = new Listener(methodInfo);
     env.addListener(listener);
     return true;
   }
-  
-  // what a terrible name!
+
   @MJI
-  public boolean postCheck__Lgov_nasa_jpf_test_TestContext_2Ljava_lang_reflect_Method_2Ljava_lang_Object_2Ljava_lang_Throwable_2__Z 
-           (MJIEnv env, int objRef, int testContextRef, int methdRef, int resultRef, int exRef){
+  public boolean postCheck(MJIEnv env, int objRef, int testContextRef, int methodRef, int resultRef, int exRef) {
+    long maxGrowth = env.getLongField(objRef, "maxGrowth");
 
-    long nMax = env.getLongField(objRef, "maxGrowth");
-
-    Listener l = listener;
-    env.removeListener(l);
+    Listener currentListener = listener;
+    env.removeListener(currentListener);
     listener = null;
-    
-    return (l.totalAllocBytes() <= nMax);
+
+    // Check if memory growth is within the specified limit
+    return currentListener.getNetAllocatedBytes() <= maxGrowth;
   }
 }
+ 
